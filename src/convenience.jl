@@ -1,4 +1,4 @@
-export cluster!, dummy_cluster!, transform_wide_to_long!
+export cluster!, dummy_cluster!, transform_wide_to_long!, cluster_with_worst_case!
 
 """
     cluster!(
@@ -152,6 +152,198 @@ function cluster!(
 
     return results_per_group
 end
+
+"""
+This alternative cluster! method is used to include the worst case and the weighting strategy
+"""
+
+function cluster_with_worst_case!(
+    connection,
+    period_duration,
+    num_rps;
+    input_database_schema = "",
+    input_profile_table_name = "profiles",
+    worst_case = :none,
+    database_schema = "",
+    drop_incomplete_last_period::Bool = false,
+    method::Symbol = :k_medoids,
+    distance::SemiMetric = Euclidean(),
+    initial_representatives::AbstractDataFrame = DataFrame(),
+    layout::ProfilesTableLayout = ProfilesTableLayout(),
+    weight_type::Symbol = :dirac,
+    tol::Float64 = 1e-2,
+    clustering_kwargs = Dict(),
+    weight_fitting_kwargs = Dict(),
+    construction = 2,
+    percentage = 0.10,
+)
+    validate_data!(
+        connection;
+        input_database_schema,
+        table_names = Dict("profiles" => input_profile_table_name),
+        layout,
+        initial_representatives,
+    )
+
+    if input_database_schema != ""
+        input_profile_table_name = "$input_database_schema.$input_profile_table_name"
+    end
+
+    profiles =
+        DuckDB.query(
+            connection,
+            "SELECT * FROM $input_profile_table_name
+            ",
+        ) |> DataFrame
+
+    split_into_periods!(profiles; period_duration, layout)
+    grouped_profiles_data = groupby(profiles, layout.cols_to_groupby)
+
+    grouped_profiles_data, metadata_per_group = _update_period_numbers_using_crossby_cols!(grouped_profiles_data, layout)
+
+    #Same number of clusters for all methods
+    num_rps_clustering = num_rps
+    if(worst_case == :global) 
+        num_rps_clustering = num_rps - 1 
+    end
+    if(worst_case == :global_fixed) 
+        num_rps_clustering = num_rps - 1 
+    end
+    if(worst_case == :local) 
+        num_rps_clustering = num_rps ÷ 2 
+    end
+
+
+    #If worst case strategy is WORSTCASE_before we need to add the global/local worst case RP befor clustering
+    #so change the initial representatives. Initially it is a 0x0 (empty) Dataframe
+   
+    # wc_initial_reps = if worst_case == :global_before
+    #                        construction == 1 ?
+    #                            build_global_wc_dataframe(profiles, grouped_profiles_data, period_duration, layout) :
+    #                            build_global_wc_dataframe_2(profiles, grouped_profiles_data, period_duration, layout)
+    #                   elseif worst_case == :local_before
+    #                        pre_results = Dict(
+    #                            group_key => find_representative_periods(
+    #                                group, num_rps ÷ 2;
+    #                                method = :k_medoids, distance, layout, clustering_kwargs...
+    #                            ) for (group_key, group) in pairs(grouped_profiles_data)
+    #                        )
+    #                        construction == 1 ?
+    #                            build_local_before_wc_dataframe(profiles, grouped_profiles_data, pre_results, period_duration, layout) :
+    #                            build_local_before_wc_dataframe_2(profiles, grouped_profiles_data, pre_results, period_duration, layout)
+    #                   else
+    #                        initial_representatives
+    #                   end
+
+    results_per_group = Dict(
+        group_key => find_representative_periods(
+            group,
+            num_rps_clustering;
+            drop_incomplete_last_period,
+            method,
+            distance,
+            initial_representatives = _get_initial_representatives_for_group(
+                initial_representatives,
+                group_key,
+                layout,
+            ),
+            layout,
+            clustering_kwargs...,
+        ) for (group_key, group) in pairs(grouped_profiles_data)
+    )
+
+    # #Add the artificial worst case rps
+    # if construction == 1 #old construction logic now i use 2
+    #     inject_worst_case!(profiles, results_per_group, worst_case, period_duration, distance; layout)
+    # else
+    #     inject_worst_case_2!(profiles, results_per_group, worst_case, weight_type, period_duration, distance; layout)
+    # end
+    inject_worst_case_2!(profiles, results_per_group, worst_case, weight_type, period_duration, distance; layout)
+
+    for clustering_result in values(results_per_group)
+        fit_rep_period_weights!(
+            clustering_result;
+            weight_type,
+            tol,
+            weight_fitting_kwargs...,
+        )
+        # For all weights, the fitter might assing not enought weight,
+        # so if WC ends up with weight 0 the rep_periods_mapping table will have no
+        # entry for it and TEM throws a Missing error. Ensure it has weight > 0.0.
+        # TODO maybe we dont need this??
+        if worst_case != :none && worst_case !=:global_fixed
+            n_rps = size(clustering_result.weight_matrix, 2)
+            n_wc  = worst_case == :local ? (n_rps ÷ 2) : 1
+            n_normal = n_rps - n_wc
+            n_periods = size(clustering_result.clustering_matrix, 2)
+            for (wc_idx, wc_col) in enumerate((n_normal + 1):n_rps)
+                if sum(clustering_result.weight_matrix[:, wc_col]) == 0.0
+                    
+                    wc_vec = clustering_result.rp_matrix[:, wc_col]
+                    # For local WC restrict the search to the originating cluster's
+                    # periods only. wc_idx maps 1-to-1 to the normal cluster it was
+                    # built from (WC periods are appended in cluster order).
+                    # For global WC search all periods.
+                    candidate_periods = if worst_case == :local
+                                            orig_cluster_col = wc_idx
+                                            pidx, _ = findnz(clustering_result.weight_matrix[:, orig_cluster_col])
+                                            isempty(pidx) ? collect(1:n_periods) : pidx
+                                        else
+                                            collect(1:n_periods)
+                                        end
+                    scores = [distance(clustering_result.clustering_matrix[:, i] , wc_vec)
+                              for i in candidate_periods]
+                    p = candidate_periods[argmin(scores)]
+                    if weight_type == :dirac
+                        old_col = argmax(Vector(clustering_result.weight_matrix[p, :]))
+                        clustering_result.weight_matrix[p, old_col] = 0.0
+                        clustering_result.weight_matrix[p, wc_col]  = 1.0
+                    else
+                        # For blended weights zero after fitting is expected when the WC
+                        # is synthetic and far from all real periods. Add a small
+                        # weight so TEM does not crash on a missing rep_periods_mapping entry.
+                        clustering_result.weight_matrix[p, wc_col] = 1e-4
+                    end
+                end
+            end
+        end
+    end
+
+    # we add the global fixed worst case only after weight fitting so that we can give it a fixed percentage
+    inject_worst_case_fixed_2!(profiles, results_per_group, worst_case, period_duration, distance, percentage; layout)
+
+    # println("\nFinal weights before writing to tables:")
+    # for (group_key, clustering_result) in results_per_group
+    #     println("Group: $group_key")
+    #     for i in 1:size(clustering_result.weight_matrix, 2)
+    #         println("Representative period $i has weight = $(sum(clustering_result.weight_matrix[:, i]))")
+    #     end
+    # end
+
+    let clustering_result = first(values(results_per_group))
+        n_cols   = size(clustering_result.weight_matrix, 2)
+        n_wc     = worst_case == :local ? (n_cols ÷ 2) : 
+                   worst_case == :none  ? 0 : 1
+        n_normal = n_cols - n_wc
+        println("last normal RP ($n_normal) weight = $(sum(clustering_result.weight_matrix[:, n_normal]))")
+        if n_wc > 0
+            println("last WC RP ($n_cols) weight = $(sum(clustering_result.weight_matrix[:, n_cols]))")
+        end
+    end
+
+    write_clustering_result_to_tables(
+        connection,
+        results_per_group,
+        metadata_per_group,
+        num_rps;
+        database_schema,
+        layout,
+    )
+
+    return results_per_group
+end
+ 
+
 
 """
     dummy_cluster!(connection)
