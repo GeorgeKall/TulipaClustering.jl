@@ -474,570 +474,8 @@ function _reinterpret_clustering_results(
 end
 
 
-function build_global_wc_dataframe(profiles, grouped_profiles_data, period_duration, layout)
-    ε = 1e-6
-
-    #create the dataframe
-    all_rows = DataFrame()
-
-    #Go through every group 
-    for (group_idx, (group_key, _)) in enumerate(pairs(grouped_profiles_data))
-        #Find the associated rows 
-        group_profiles = filter(
-            row -> all(row[col] == group_key[col] for col in keys(group_key)),
-            profiles
-        )
-
-        #Construct the worst case day 
-        worst_case_values = Dict{String, Vector{Float64}}()
-
-        for t in 1:period_duration
-            timestep_data = filter(row -> row[layout.timestep] == t, group_profiles)
-            periods = groupby(timestep_data, :period)
-
-            min_ratio = Inf
-            max_demand = 0.0
-            min_availability = Inf
-            worst_period_index = 0
-            for period in periods
-                demand_val = only(filter(row -> row.profile_name == "demand", period).value)
-                availability_val = sum(filter(row -> row.profile_name in ["wind_onshore", "wind_offshore", "solar", "hydro_inflow"], period).value) #TODO think of other technologies but for tutorial 9 it works 
-                ratio = availability_val / (demand_val + ε) # avoid div by zero
-
-                if demand_val > max_demand
-                    max_demand = demand_val
-                end
-                 if ratio < min_ratio
-                        min_ratio = ratio
-                        worst_period_index = period[1, layout.period]
-                end
-                    
-            end
-
-            worst_row = filter(row -> row[layout.period] == worst_period_index, timestep_data)
-            for row in eachrow(worst_row)
-                if !haskey(worst_case_values, row.profile_name)
-                    worst_case_values[row.profile_name] = Float64[]
-                end
-                push!(worst_case_values[row.profile_name], row.value)
-            end
-        end
-
-        # Build rows with period=1 and all groupby key columns
-        for (profile_name, values) in worst_case_values
-            for (t, v) in enumerate(values)
-                row_data = merge(
-                    (period=1, timestep=t, profile_name=profile_name, value=v),
-                    NamedTuple(col => group_key[col] for col in keys(group_key))
-                )
-                push!(all_rows, row_data; cols=:union)
-            end
-        end
-    end
-    # the columns are expected in this order
-    expected = [:period, :timestep, :milestone_year, :scenario, :profile_name, :value]
-    all_rows = all_rows[:, expected]
-    
-    return all_rows
-end   
-
-function build_local_before_wc_dataframe(profiles, grouped_profiles_data, pre_results, period_duration, layout)
-    ε = 1e-6
-    all_rows = DataFrame()
-
-    for (group_key, _) in pairs(grouped_profiles_data)
-        group_profiles = filter(
-            row -> all(row[col] == group_key[col] for col in keys(group_key)),
-            profiles
-        )
-        clustering_result = pre_results[group_key]
-        n_clusters = size(clustering_result.weight_matrix, 2)
-
-        for cluster in 1:n_clusters
-            period_indices, _ = findnz(clustering_result.weight_matrix[:, cluster])
-            cluster_profiles = filter(row -> row[layout.period] in period_indices, group_profiles)
-
-            worst_case_values = Dict{String, Vector{Float64}}()
-            for t in 1:period_duration
-                timestep_data = filter(row -> row[layout.timestep] == t, cluster_profiles)
-                periods = groupby(timestep_data, :period)
-
-                min_ratio = Inf
-                max_demand = 0.0
-                min_availability = Inf
-                worst_period_index = 0
-                for period in periods
-                    demand_val = only(filter(row -> row.profile_name == "demand", period).value)
-                    availability_val = sum(filter(row -> row.profile_name in ["wind_onshore", "wind_offshore", "solar", "hydro_inflow"], period).value)
-                    ratio = availability_val / (demand_val + ε)
-                    if demand_val > max_demand
-                        max_demand = demand_val
-                    end
-                     if ratio < min_ratio
-                        min_ratio = ratio
-                        worst_period_index = period[1, layout.period]
-                    end
-                end
-
-                worst_row = filter(row -> row[layout.period] == worst_period_index, timestep_data)
-                for row in eachrow(worst_row)
-                    if !haskey(worst_case_values, row.profile_name)
-                        worst_case_values[row.profile_name] = Float64[]
-                    end
-                    push!(worst_case_values[row.profile_name], row.value)
-                end
-            end
-
-            for (profile_name, values) in worst_case_values
-                for (t, v) in enumerate(values)
-                    row_data = merge(
-                        (period=cluster, timestep=t, profile_name=profile_name, value=v),
-                        NamedTuple(col => group_key[col] for col in keys(group_key))
-                    )
-                    push!(all_rows, row_data; cols=:union)
-                end
-            end
-        end
-    end
-
-    expected = [:period, :timestep, :milestone_year, :scenario, :profile_name, :value]
-    return all_rows[:, expected]
-end
-
-
-
-
-# function inject_worst_case!(profiles, results_per_group, worst_case, period_duration, distance; layout=ProfilesTableLayout() )
-#     # worst_case is :global or :local
-#     if (worst_case == :none)
-#         println("none")
-#         return;
-#     end   
-
-#      if worst_case == :global_before || worst_case == :local_before || worst_case == :global_fixed
-#         println("$(worst_case) clustering")
-#         return
-#     end    
-    
-#     # avoid division by zero
-#     ε = 1e-6
-
-#     if (worst_case == :global)
-#         println("global")
-        
-#         for (group_key, clustering_result) in results_per_group  # run for each scenario
-#             # println(group_key)
-#             # println(keys(group_key))
-#             # println(group_key[:milestone_year])
-                    
-#             # filter profiles to this group
-#             group_profiles = filter(row -> all(row[col] == group_key[col] for col in keys(group_key)),  profiles)
-
-#             # Construct the artificial worst case 
-#             worst_case_values = Dict{String, Vector{Float64}}()  # profile_name -> 24 values
-#             #println(unique(group_profiles.profile_name))
-
-           
-#             for t in 1:period_duration
-#                 timestep_data = filter(row -> row[layout.timestep] == t, group_profiles);
-                
-#                 #group each period data together 
-#                 periods = groupby(timestep_data, :period);
-
-#                 worst_period_index = 0;
-#                 min_ratio = Inf;
-#                 max_demand = 0;
-#                 min_availability = Inf;
-#                 for period in periods
-#                     demand_val = only(filter(row -> row.profile_name == "demand", period).value)
-#                     availability_val = sum(filter(row -> row.profile_name in ["wind_onshore", "wind_offshore", "solar", "hydro_inflow"], period).value) #TODO think of other technologies but for tutorial 9 it works 
-#                     ratio = availability_val / (demand_val + ε) # avoid div by zero
-
-#                     #Update the maximum demand seen and the minimum ratio seen
-#                     if demand_val > max_demand
-#                         max_demand = demand_val
-#                     end
-
-#                     if ratio < min_ratio
-#                         min_ratio = ratio
-#                         worst_period_index = period[1, layout.period]
-#                     end
-                    
-#                     # Calculate the current score and if it is lower update the worst case timestep
-#                     # curr_min_availability = min_ratio * max_demand
-#                     # if curr_min_availability < min_availability
-#                     #     min_availability = curr_min_availability
-#                     #     worst_period_index = period[1, layout.period]
-#                     # end
-                    
-#                 end
-
-#                 # grab the actual values from the worst period at this timestep
-#                 worst_row = filter(row -> row[layout.period] == worst_period_index, timestep_data)
-#                 for row in eachrow(worst_row)
-#                     if !haskey(worst_case_values, row.profile_name)
-#                         worst_case_values[row.profile_name] = Float64[]
-#                     end
-#                     push!(worst_case_values[row.profile_name], row.value)
-#                 end       
-                
-#             end
-            
-#             # Inject this period into clustering_result struct
-#             # First we need to add the worst case rp to the PROFILES 
-#             new_rp_index = maximum(clustering_result.profiles.rep_period) + 1
-#             new_rows = DataFrame()
-#             milestone_year = group_key[:milestone_year]
-#             scenario = group_key[:scenario]
-#             for (profile_name, values) in worst_case_values
-#                 for (t, v) in enumerate(values)
-#                     push!(new_rows, (rep_period=new_rp_index, timestep=t, milestone_year=milestone_year, scenario=scenario, profile_name=profile_name, value=v))
-#                 end
-#             end
-#             append!(clustering_result.profiles, new_rows)
-            
-#             # Append a new column to the WEIGHT_MATRIX for the new global rp
-#             # We want to do dirac assignemnt so assign the periods that are closer to the global rp
-#             n_original_periods = size(clustering_result.weight_matrix, 1)
-#             zero_col = spzeros(n_original_periods)
-#             clustering_result.weight_matrix = hcat(clustering_result.weight_matrix, zero_col)
-#             # println(size(clustering_result.weight_matrix))
-#             # println(clustering_result.weight_matrix[100, :])
-#             # for i in 1:n_original_periods
-#             #     current_cluster = argmax(clustering_result.weight_matrix[i, :]) #it should have a 1.0 on the column of the cluster it is assigned to 
-#             #     period_vec = clustering_result.clustering_matrix[:, i]
-#             #     #Get the feature vectors 
-#             #     centroid_vec = clustering_result.rp_matrix[:, current_cluster]
-#             #     wc_vec = clustering_result.rp_matrix[:, end] # it is the last column 
-#             #     # println(current_cluster ===wc_vec )
-                
-#             #     # compare distances
-#             #     if distance(period_vec, wc_vec) <= distance(period_vec, centroid_vec)
-#             #         # println(distance(period_vec, wc_vec))
-#             #         # println(distance(period_vec, centroid_vec))
-#             #         # remove old assignment
-#             #         clustering_result.weight_matrix[i, current_cluster] = 0.0
-#             #         # assign to new global RP
-#             #         clustering_result.weight_matrix[i, end] = 1.0
-#             #         #println("CHanged")
-#             #     end    
-#             # end
-#             # # this is for the case that nothing was assinged to the worst case 
-#             # # It must have a weight even a small one 
-#             # if nnz(clustering_result.weight_matrix[:, end]) == 0 
-#             #     println("hello")
-#             #     # find the period with the worst stress score globally
-#             #     period_scores = [distance(clustering_result.clustering_matrix[:, i], 
-#             #                             clustering_result.rp_matrix[:, end]) 
-#             #                     for i in 1:n_original_periods]
-#             #     worst_p = argmin(period_scores)  # argmin because closer = worse
-#             #     clustering_result.weight_matrix[worst_p, argmax(clustering_result.weight_matrix[worst_p, :])] = 0.0
-#             #     clustering_result.weight_matrix[worst_p, end] = 1.0
-#             #     #println("not found")
-#             # end
-            
-        
-#             #Lastly we need to add a column into the RP_MATRIX
-#             # build feature vector for worst case
-#             wc_df = copy(new_rows)
-#             rename!(wc_df, :rep_period => :period)
-#             sort!(wc_df, [:profile_name, :timestep])
-#             #transform it the format of feature vector 
-#             wc_matrix, _ = df_to_matrix_and_keys(wc_df, clustering_result.auxiliary_data.key_columns; layout)
-#             clustering_result.rp_matrix = hcat(clustering_result.rp_matrix, wc_matrix)
-
-#             println("Before fitting:")
-#             for i in 1:size(clustering_result.weight_matrix, 2)
-#                 print("Representative period $i has weight = ")
-#                 println(sum(clustering_result.weight_matrix[:, i]))
-#             end 
-#         end
-
-#     end
-    
-#     if (worst_case == :local) 
-#         println("local")
-
-#         for (group_key, clustering_result) in results_per_group  # run for each scenario
-                    
-#             clusters = unique(clustering_result.profiles.rep_period)
-#             # println(clusters)
-#             # Construct the artificial worst case for each cluster
-#             for cluster in clusters
-#                 # filter profiles to this group and for this cluster 
-#                 group_profiles = filter(row -> all(row[col] == group_key[col] for col in keys(group_key)),  profiles)
-#                 # get period indices assigned to this cluster from the weight matrix
-#                 period_indices, _ = findnz(clustering_result.weight_matrix[:, cluster])
-#                 # filter group_profiles to only periods in this cluster
-#                 cluster_profiles = filter(row -> row[layout.period] in period_indices, group_profiles)
-#                 #Construct the worst case RP
-#                 worst_case_values = Dict{String, Vector{Float64}}()  # profile_name -> 24 values
-#                 for t in 1:period_duration
-#                     timestep_data = filter(row -> row[layout.timestep] == t, cluster_profiles);
-                    
-#                     #group each period data together 
-#                     periods = groupby(timestep_data, :period);
-
-#                     worst_period_index = 0;
-#                     min_ratio = Inf;
-#                     max_demand = 0;
-#                     min_availability = Inf;
-#                     for period in periods
-#                         demand_val = only(filter(row -> row.profile_name == "demand", period).value)
-#                         availability_val = sum(filter(row -> row.profile_name in ["wind_onshore", "wind_offshore", "solar", "hydro_inflow"], period).value)
-#                         ratio = availability_val / (demand_val + ε) # avoid div by zero
-
-#                         #Update the maximum demand seen and the minimum ratio seen
-#                         if demand_val > max_demand
-#                             max_demand = demand_val
-#                         end
-
-#                          if ratio < min_ratio
-#                             min_ratio = ratio
-#                             worst_period_index = period[1, layout.period]
-#                         end
-                    
-                        
-#                     end
-
-#                     # grab the actual values from the worst period at this timestep
-#                     worst_row = filter(row -> row[layout.period] == worst_period_index, timestep_data)
-#                     for row in eachrow(worst_row)
-#                         if !haskey(worst_case_values, row.profile_name)
-#                             worst_case_values[row.profile_name] = Float64[]
-#                         end
-#                         push!(worst_case_values[row.profile_name], row.value)
-#                     end       
-                    
-#                 end
-                
-#                 # Inject this period into clustering_result struct
-#                 # First we need to add the worst case rp to the PROFILES
-#                 # it gets id +1 from the old maximum which hopefully is already updated from the last iteration of the loop 
-#                 new_rp_index = maximum(clustering_result.profiles.rep_period) + 1
-#                 new_rows = DataFrame()
-#                 milestone_year = group_key[:milestone_year]
-#                 scenario = group_key[:scenario]
-#                 for (profile_name, values) in worst_case_values
-#                     for (t, v) in enumerate(values)
-#                         push!(new_rows, (rep_period=new_rp_index, timestep=t, milestone_year=milestone_year, scenario=scenario, profile_name=profile_name, value=v))
-#                     end
-#                 end
-#                 append!(clustering_result.profiles, new_rows)
-                
-#                 # Append a new column to the WEIGHT_MATRIX with all zeroes for our new global rp 
-#                 n_original_periods = size(clustering_result.weight_matrix, 1)
-#                 zero_col = spzeros(n_original_periods)
-#                 clustering_result.weight_matrix = hcat(clustering_result.weight_matrix, zero_col)
-#                 # for i in unique(cluster_profiles.period)
-#                 #     current_cluster = argmax(clustering_result.weight_matrix[i, :]) #it should have a 1.0 on the column of the cluster it is assigned to 
-#                 #     if(current_cluster > cluster)
-#                 #         continue
-#                 #     end
-#                 #     period_vec = clustering_result.clustering_matrix[:, i]
-#                 #     #Get the feature vectors 
-#                 #     centroid_vec = clustering_result.rp_matrix[:, current_cluster]
-#                 #     wc_vec = clustering_result.rp_matrix[:, end] # it is the last column
-                    
-#                 #     # compare distances
-#                 #     if distance(period_vec, wc_vec) <= distance(period_vec, centroid_vec)
-#                 #         # println(distance(period_vec, wc_vec))
-#                 #         # println(distance(period_vec, centroid_vec))
-#                 #         # remove old assignment
-#                 #         clustering_result.weight_matrix[i, current_cluster] = 0.0
-#                 #         # assign to new global RP
-#                 #         clustering_result.weight_matrix[i, end] = 1.0
-#                 #         println("CHanged")
-#                 #     end    
-#                 # end
-#                 # # this is for the case that nothing was assinged to the worst case 
-#                 # # It must have a weight even a small one TODO
-#                 # #if nnz(clustering_result.weight_matrix[:, end]) == 0 
-#                 #     # find the period with the worst stress score globally
-#                 #     period_scores = [distance(clustering_result.clustering_matrix[:, i], 
-#                 #                             clustering_result.rp_matrix[:, end]) 
-#                 #                     for i in period_indices]
-#                 #     worst_p = argmin(period_scores)  # argmin because closer = worse
-#                 #     clustering_result.weight_matrix[worst_p, argmax(clustering_result.weight_matrix[worst_p, :])] = ε
-#                 #     clustering_result.weight_matrix[worst_p, end] = 1.0
-#                 #     #println("not found")
-#                 # #end
-
-#                 # Lastly we need to add a column into the RP_MATRIX
-#                 # build feature vector for worst case
-#                 wc_df = copy(new_rows)
-#                 rename!(wc_df, :rep_period => :period)
-#                 sort!(wc_df, [:profile_name, :timestep])
-#                 #transform it the format of feature vector 
-#                 wc_matrix, _ = df_to_matrix_and_keys(wc_df, clustering_result.auxiliary_data.key_columns; layout)           
-#                 clustering_result.rp_matrix = hcat(clustering_result.rp_matrix, wc_matrix)
-
-#             end
-#             println("Before fitting:")
-#             for i in 1:size(clustering_result.weight_matrix, 2)
-#                 print("Representative period $i has weight = ")
-#                 println(sum(clustering_result.weight_matrix[:, i]))
-#             end 
-#         end
-#     end   
-# end
-
-
-
-
 
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-function build_global_wc_dataframe_2(profiles, grouped_profiles_data, period_duration, layout)
-    ε = 1e-6
-
-    #create the dataframe
-    all_rows = DataFrame()
-
-    techs = ["wind_onshore", "wind_offshore", "solar", "hydro_inflow"]
-
-    #Go through every group 
-    for (group_idx, (group_key, _)) in enumerate(pairs(grouped_profiles_data))
-        #Find the associated rows 
-        group_profiles = filter(
-            row -> all(row[col] == group_key[col] for col in keys(group_key)),
-            profiles
-        )
-
-        #Construct the worst case day 
-        worst_case_values = Dict{String, Vector{Float64}}()
-
-        for t in 1:period_duration
-            timestep_data = filter(row -> row[layout.timestep] == t, group_profiles)
-
-            # Max demand across all periods at this timestep (Kremer: D_r = max_t D_t)
-            demand_rows = filter(row -> row.profile_name == "demand", timestep_data)
-            max_demand = maximum(demand_rows.value)
-            if !haskey(worst_case_values, "demand")
-                worst_case_values["demand"] = Float64[]
-            end
-            push!(worst_case_values["demand"], max_demand)
-
-
-            # For each technology: min(availability/demand) * max_demand 
-            for tech in techs
-                tech_rows = filter(row -> row.profile_name == tech, timestep_data)
-                isempty(tech_rows) && continue
-
-                min_ratio = Inf
-                for p in unique(tech_rows.period)
-                    avail = only(filter(row -> row.period == p, tech_rows)).value
-                    dem   = only(filter(row -> row.period == p && row.profile_name == "demand", timestep_data)).value
-                    ratio = avail / (dem + ε)
-                    if ratio < min_ratio
-                        min_ratio = ratio
-                    end
-                end
-
-                min_availability = min_ratio * max_demand
-                if !haskey(worst_case_values, tech)
-                    worst_case_values[tech] = Float64[]
-                end
-                push!(worst_case_values[tech], min_availability)
-            end
-        end
-
-        # Build rows with period=1 and all groupby key columns
-        for (profile_name, values) in worst_case_values
-            for (t, v) in enumerate(values)
-                row_data = merge(
-                    (period=1, timestep=t, profile_name=profile_name, value=v),
-                    NamedTuple(col => group_key[col] for col in keys(group_key))
-                )
-                push!(all_rows, row_data; cols=:union)
-            end
-        end
-    end
-
-    # the columns are expected in this order
-    expected = [:period, :timestep, :milestone_year, :scenario, :profile_name, :value]
-    all_rows = all_rows[:, expected]
-    sort!(all_rows, [:period, :profile_name, :timestep])
-    return all_rows
-end   
-
-
-function build_local_before_wc_dataframe_2(profiles, grouped_profiles_data, pre_results, period_duration, layout)
-    ε = 1e-6
-    techs = ["wind_onshore", "wind_offshore", "solar", "hydro_inflow"]
-    all_rows = DataFrame()
-
-    for (group_key, _) in pairs(grouped_profiles_data)
-        group_profiles = filter(
-            row -> all(row[col] == group_key[col] for col in keys(group_key)),
-            profiles
-        )
-        clustering_result = pre_results[group_key]
-        n_clusters = size(clustering_result.weight_matrix, 2)
-
-        for cluster in 1:n_clusters
-            period_indices, _ = findnz(clustering_result.weight_matrix[:, cluster])
-            cluster_profiles = filter(row -> row[layout.period] in period_indices, group_profiles)
-
-            #Construct the worst case day for this cluster
-            worst_case_values = Dict{String, Vector{Float64}}()
-
-            for t in 1:period_duration
-                timestep_data = filter(row -> row[layout.timestep] == t, cluster_profiles)
-
-                # Max demand across cluster periods at this timestep
-                demand_rows = filter(row -> row.profile_name == "demand", timestep_data)
-                max_demand = maximum(demand_rows.value)
-                if !haskey(worst_case_values, "demand")
-                    worst_case_values["demand"] = Float64[]
-                end
-                push!(worst_case_values["demand"], max_demand)
-
-                # For each technology: min(availability/demand) * max_demand independently
-                # Scoped to periods within this cluster only
-                for tech in techs
-                    tech_rows = filter(row -> row.profile_name == tech, timestep_data)
-                    isempty(tech_rows) && continue
-
-                    min_ratio = Inf
-                    for p in unique(tech_rows.period)
-                        avail = only(filter(row -> row.period == p, tech_rows)).value
-                        dem   = only(filter(row -> row.period == p && row.profile_name == "demand", timestep_data)).value
-                        ratio = avail / (dem + ε)
-                        if ratio < min_ratio
-                            min_ratio = ratio
-                        end
-                    end
-
-                    min_availability = min_ratio * max_demand
-                    if !haskey(worst_case_values, tech)
-                        worst_case_values[tech] = Float64[]
-                    end
-                    push!(worst_case_values[tech], min_availability)
-                end
-            end
-
-            # Build rows with period=cluster so each cluster WC gets a unique period index
-            for (profile_name, values) in worst_case_values
-                for (t, v) in enumerate(values)
-                    row_data = merge(
-                        (period=cluster, timestep=t, profile_name=profile_name, value=v),
-                        NamedTuple(col => group_key[col] for col in keys(group_key))
-                    )
-                    push!(all_rows, row_data; cols=:union)
-                end
-            end
-        end
-    end
-
-    expected = [:period, :timestep, :milestone_year, :scenario, :profile_name, :value]
-    all_rows = all_rows[:, expected]
-    sort!(all_rows, [:period, :profile_name, :timestep])
-
-    return all_rows
-end
-
 
 function inject_worst_case_2!(profiles, results_per_group, worst_case, weight_type, period_duration, distance; layout=ProfilesTableLayout())
     if worst_case == :none
@@ -1065,44 +503,46 @@ function inject_worst_case_2!(profiles, results_per_group, worst_case, weight_ty
             )
 
             # Construct the artificial worst case 
-            worst_case_values = Dict{String, Vector{Float64}}()  # profile_name -> 24 values
-            #println(unique(group_profiles.profile_name))
+            profile_lookup = Dict{Tuple{Int,String,Int}, Float64}()
+    for row in eachrow(group_profiles)
+        profile_lookup[(row[layout.timestep], row.profile_name, row[layout.period])] = row.value
+    end
+    all_periods = sort(unique(group_profiles[!, layout.period]))
 
-            for t in 1:period_duration
-                timestep_data = filter(row -> row[layout.timestep] == t, group_profiles)
+    # Construct the artificial worst case
+    worst_case_values = Dict{String, Vector{Float64}}()
 
-                # Max demand across all periods at this timestep
-                demand_rows = filter(row -> row.profile_name == "demand", timestep_data)
-                max_demand = maximum(demand_rows.value)
+    for t in 1:period_duration
+        # Max demand across all periods at this timestep
+        max_demand = maximum(profile_lookup[(t, "demand", p)] for p in all_periods)
+        if !haskey(worst_case_values, "demand")
+            worst_case_values["demand"] = Float64[]
+        end
+        push!(worst_case_values["demand"], max_demand)
 
-                if !haskey(worst_case_values, "demand")
-                    worst_case_values["demand"] = Float64[]
-                end
-                push!(worst_case_values["demand"], max_demand)
+        # For each technology: min(availability/demand) * max_demand
+        for tech in techs
+            has_tech = any(haskey(profile_lookup, (t, tech, p)) for p in all_periods)
+            has_tech || continue
 
-                # For each technology find the availability by: min(availability/demand) * max_demand
-                for tech in techs
-                    
-                    tech_rows = filter(row -> row.profile_name == tech, timestep_data)
-                    isempty(tech_rows) && continue
-
-                    min_ratio = Inf
-                    for period in unique(tech_rows.period)
-                        avail = only(filter(row -> row.period == period, tech_rows)).value
-                        dem   = only(filter(row -> row.period == period && row.profile_name == "demand", timestep_data)).value
-                        ratio = avail / (dem + ε)
-                        if ratio < min_ratio
-                            min_ratio = ratio
-                        end
-                    end
-                    
-                    min_availability = min_ratio * max_demand
-                    if !haskey(worst_case_values, tech)
-                        worst_case_values[tech] = Float64[]
-                    end
-                    push!(worst_case_values[tech], min_availability)
+            min_ratio = Inf
+            for p in all_periods
+                haskey(profile_lookup, (t, tech, p)) || continue
+                avail = profile_lookup[(t, tech, p)]
+                dem   = profile_lookup[(t, "demand", p)]
+                ratio = avail / (dem + ε)
+                if ratio < min_ratio
+                    min_ratio = ratio
                 end
             end
+
+            min_availability = min_ratio * max_demand
+            if !haskey(worst_case_values, tech)
+                worst_case_values[tech] = Float64[]
+            end
+            push!(worst_case_values[tech], min_availability)
+        end
+    end
             # Inject this period into clustering_result struct
             # First we need to add the worst case rp to the PROFILES 
             new_rp_index = maximum(clustering_result.profiles.rep_period) + 1
@@ -1179,41 +619,45 @@ function inject_worst_case_2!(profiles, results_per_group, worst_case, weight_ty
                 cluster_profiles = filter(row -> row[layout.period] in period_indices, group_profiles)
                 #Construct the worst case RP
 
-                worst_case_values = Dict{String, Vector{Float64}}() # profile_name -> 24 values
+                cluster_lookup = Dict{Tuple{Int,String,Int}, Float64}()
+        for row in eachrow(cluster_profiles)
+            cluster_lookup[(row[layout.timestep], row.profile_name, row[layout.period])] = row.value
+        end
 
-                for t in 1:period_duration
-                    timestep_data = filter(row -> row[layout.timestep] == t, cluster_profiles)
+        # Construct the worst case RP
+        worst_case_values = Dict{String, Vector{Float64}}()
 
-                    # Max demand across cluster periods at this timestep
-                    demand_rows = filter(row -> row.profile_name == "demand", timestep_data)
-                    max_demand = maximum(demand_rows.value)
-                    if !haskey(worst_case_values, "demand")
-                        worst_case_values["demand"] = Float64[]
-                    end
-                    push!(worst_case_values["demand"], max_demand)
+        for t in 1:period_duration
+            # Max demand across cluster periods at this timestep
+            max_demand = maximum(cluster_lookup[(t, "demand", p)] for p in period_indices)
+            if !haskey(worst_case_values, "demand")
+                worst_case_values["demand"] = Float64[]
+            end
+            push!(worst_case_values["demand"], max_demand)
 
-                    # For each technology find the availability by: min(availability/demand) * max_demand
-                    for tech in techs
-                        tech_rows = filter(row -> row.profile_name == tech, timestep_data)
-                        isempty(tech_rows) && continue
+            # For each technology: min(availability/demand) * max_demand
+            for tech in techs
+                has_tech = any(haskey(cluster_lookup, (t, tech, p)) for p in period_indices)
+                has_tech || continue
 
-                        min_ratio = Inf
-                        for p in unique(tech_rows.period)
-                            avail = only(filter(row -> row.period == p, tech_rows)).value
-                            dem   = only(filter(row -> row.period == p && row.profile_name == "demand", timestep_data)).value
-                            ratio = avail / (dem + ε)
-                            if ratio < min_ratio
-                                min_ratio = ratio
-                            end
-                        end
-
-                        min_availability = min_ratio * max_demand
-                        if !haskey(worst_case_values, tech)
-                            worst_case_values[tech] = Float64[]
-                        end
-                        push!(worst_case_values[tech], min_availability)
+                min_ratio = Inf
+                for p in period_indices
+                    haskey(cluster_lookup, (t, tech, p)) || continue
+                    avail = cluster_lookup[(t, tech, p)]
+                    dem   = cluster_lookup[(t, "demand", p)]
+                    ratio = avail / (dem + ε)
+                    if ratio < min_ratio
+                        min_ratio = ratio
                     end
                 end
+
+                min_availability = min_ratio * max_demand
+                if !haskey(worst_case_values, tech)
+                    worst_case_values[tech] = Float64[]
+                end
+                push!(worst_case_values[tech], min_availability)
+            end
+        end
                 # Inject this period into clustering_result struct
                 # First we need to add the worst case rp to the PROFILES
                 # it gets id +1 from the old maximum which hopefully is already updated from the last iteration of the loop 
@@ -1304,43 +748,47 @@ function inject_worst_case_fixed_2!(profiles, results_per_group, worst_case, per
             )
 
             # Construct the artificial worst case 
-            worst_case_values = Dict{String, Vector{Float64}}()  # profile_name -> 24 values
-            #println(unique(group_profiles.profile_name))
+            # Pre-build lookup once: (timestep, profile_name, period) -> value
+    profile_lookup = Dict{Tuple{Int,String,Int}, Float64}()
+    for row in eachrow(group_profiles)
+        profile_lookup[(row[layout.timestep], row.profile_name, row[layout.period])] = row.value
+    end
+    all_periods = sort(unique(group_profiles[!, layout.period]))
 
-            for t in 1:period_duration
-                timestep_data = filter(row -> row[layout.timestep] == t, group_profiles)
+    # Construct the artificial worst case
+    worst_case_values = Dict{String, Vector{Float64}}()
 
-                # Max demand across all periods at this timestep
-                demand_rows = filter(row -> row.profile_name == "demand", timestep_data)
-                max_demand = maximum(demand_rows.value)
+    for t in 1:period_duration
+        # Max demand across all periods at this timestep
+        max_demand = maximum(profile_lookup[(t, "demand", p)] for p in all_periods)
+        if !haskey(worst_case_values, "demand")
+            worst_case_values["demand"] = Float64[]
+        end
+        push!(worst_case_values["demand"], max_demand)
 
-                if !haskey(worst_case_values, "demand")
-                    worst_case_values["demand"] = Float64[]
-                end
-                push!(worst_case_values["demand"], max_demand)
+    # For each technology: min(availability/demand) * max_demand
+    for tech in techs
+        has_tech = any(haskey(profile_lookup, (t, tech, p)) for p in all_periods)
+        has_tech || continue
 
-                # For each technology find the availability by: min(availability/demand) * max_demand
-                for tech in techs
-                    tech_rows = filter(row -> row.profile_name == tech, timestep_data)
-                    isempty(tech_rows) && continue
-
-                    min_ratio = Inf
-                    for period in unique(tech_rows.period)
-                        avail = only(filter(row -> row.period == period, tech_rows)).value
-                        dem   = only(filter(row -> row.period == period && row.profile_name == "demand", timestep_data)).value
-                        ratio = avail / (dem + ε)
-                        if ratio < min_ratio
-                            min_ratio = ratio
-                        end
-                    end
-
-                    min_availability = min_ratio * max_demand
-                    if !haskey(worst_case_values, tech)
-                        worst_case_values[tech] = Float64[]
-                    end
-                    push!(worst_case_values[tech], min_availability)
-                end
+        min_ratio = Inf
+        for p in all_periods
+            haskey(profile_lookup, (t, tech, p)) || continue
+            avail = profile_lookup[(t, tech, p)]
+            dem   = profile_lookup[(t, "demand", p)]
+            ratio = avail / (dem + ε)
+            if ratio < min_ratio
+                min_ratio = ratio
             end
+        end
+
+        min_availability = min_ratio * max_demand
+        if !haskey(worst_case_values, tech)
+            worst_case_values[tech] = Float64[]
+        end
+        push!(worst_case_values[tech], min_availability)
+    end
+end
             # Inject this period into clustering_result struct
             # First we need to add the worst case rp to the PROFILES 
             new_rp_index = maximum(clustering_result.profiles.rep_period) + 1
@@ -1383,3 +831,357 @@ function inject_worst_case_fixed_2!(profiles, results_per_group, worst_case, per
         end
     end
 end
+
+
+
+
+
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+# function inject_worst_case_2!(profiles, results_per_group, worst_case, weight_type, period_duration, distance; layout=ProfilesTableLayout())
+#     if worst_case == :none
+#         println("none")
+#         return
+#     end
+#     if worst_case == :global_before || worst_case == :local_before || worst_case == :global_fixed
+#         println("$(worst_case) clustering")
+#         return
+#     end
+
+#     # avoid division by zero
+#     ε = 1e-6
+
+#     techs = ["wind_onshore", "wind_offshore", "solar", "hydro_inflow"]
+
+#     if worst_case == :global
+#         println("global")
+#         for (group_key, clustering_result) in results_per_group # run for each scenario
+            
+#             # filter profiles to this group
+#             group_profiles = filter(
+#                 row -> all(row[col] == group_key[col] for col in keys(group_key)),
+#                 profiles
+#             )
+
+#             # Construct the artificial worst case 
+#             worst_case_values = Dict{String, Vector{Float64}}()  # profile_name -> 24 values
+#             #println(unique(group_profiles.profile_name))
+
+#             for t in 1:period_duration
+#                 timestep_data = filter(row -> row[layout.timestep] == t, group_profiles)
+
+#                 # Max demand across all periods at this timestep
+#                 demand_rows = filter(row -> row.profile_name == "demand", timestep_data)
+#                 max_demand = maximum(demand_rows.value)
+
+#                 if !haskey(worst_case_values, "demand")
+#                     worst_case_values["demand"] = Float64[]
+#                 end
+#                 push!(worst_case_values["demand"], max_demand)
+
+#                 # For each technology find the availability by: min(availability/demand) * max_demand
+#                 for tech in techs
+                    
+#                     tech_rows = filter(row -> row.profile_name == tech, timestep_data)
+#                     isempty(tech_rows) && continue
+
+#                     min_ratio = Inf
+#                     for period in unique(tech_rows.period)
+#                         avail = only(filter(row -> row.period == period, tech_rows)).value
+#                         dem   = only(filter(row -> row.period == period && row.profile_name == "demand", timestep_data)).value
+#                         ratio = avail / (dem + ε)
+#                         if ratio < min_ratio
+#                             min_ratio = ratio
+#                         end
+#                     end
+                    
+#                     min_availability = min_ratio * max_demand
+#                     if !haskey(worst_case_values, tech)
+#                         worst_case_values[tech] = Float64[]
+#                     end
+#                     push!(worst_case_values[tech], min_availability)
+#                 end
+#             end
+#             # Inject this period into clustering_result struct
+#             # First we need to add the worst case rp to the PROFILES 
+#             new_rp_index = maximum(clustering_result.profiles.rep_period) + 1
+#             new_rows = DataFrame()
+#             milestone_year = group_key[:milestone_year]
+#             has_scenario = :scenario in keys(group_key)
+#             for (profile_name, values) in worst_case_values
+#                 for (t, v) in enumerate(values)
+#                     if has_scenario
+#                         push!(new_rows, (rep_period=new_rp_index, timestep=t, milestone_year=milestone_year, scenario=group_key[:scenario], profile_name=profile_name, value=v))
+#                     else
+#                         push!(new_rows, (rep_period=new_rp_index, timestep=t, milestone_year=milestone_year, profile_name=profile_name, value=v))
+#                     end
+#                 end
+#             end
+#             append!(clustering_result.profiles, new_rows)
+            
+#             # Append a new column to the WEIGHT_MATRIX for the new global rp
+#             # We want to do dirac assignemnt so assign the periods that are closer to the global rp
+#             n_original_periods = size(clustering_result.weight_matrix, 1)
+#             zero_col = spzeros(n_original_periods)
+#             clustering_result.weight_matrix = hcat(clustering_result.weight_matrix, zero_col) 
+#             if weight_type == :dirac
+#                 # Full Dirac reassignment: for each original period, if it is closer
+#                 # to the global WC than to its currently assigned centroid, steal it.
+#                 wc_vec = clustering_result.rp_matrix[:, end]
+#                 n_reassigned = 0
+#                 for i in 1:n_original_periods
+#                     period_vec  = clustering_result.clustering_matrix[:, i]
+#                     current_col = argmax(Vector(clustering_result.weight_matrix[i, 1:end-1])) # Last column is the global
+#                     centroid_vec = clustering_result.rp_matrix[:, current_col]
+#                     dist_to_centroid = distance(period_vec, centroid_vec)
+#                     dist_to_wc       = distance(period_vec, wc_vec)
+#                     if dist_to_wc < dist_to_centroid
+#                         clustering_result.weight_matrix[i, current_col] = 0.0
+#                         clustering_result.weight_matrix[i, end]         = 1.0
+#                         n_reassigned += 1
+#                     end
+#                 end
+#                 println("  [global WC] Dirac reassignment: $n_reassigned / $n_original_periods periods moved to WC")
+#             end
+           
+        
+#             #Lastly we need to add a column into the RP_MATRIX
+#             # build feature vector for worst case
+#             wc_df = copy(new_rows)
+#             rename!(wc_df, :rep_period => :period)
+#             sort!(wc_df, [:profile_name, :timestep])
+#             #transform it the format of feature vector 
+#             wc_matrix, _ = df_to_matrix_and_keys(wc_df, clustering_result.auxiliary_data.key_columns; layout)
+#             clustering_result.rp_matrix = hcat(clustering_result.rp_matrix, wc_matrix)
+
+#             # println("Before fitting:")
+#             # for i in 1:size(clustering_result.weight_matrix, 2)
+#             #     print("Representative period $i has weight = ")
+#             #     println(sum(clustering_result.weight_matrix[:, i]))
+#             # end 
+#         end
+#     end
+
+#     if worst_case == :local
+#         println("local")
+
+#         for (group_key, clustering_result) in results_per_group
+#             # filter profiles to this group and for this cluster 
+#             group_profiles = filter(row -> all(row[col] == group_key[col] for col in keys(group_key)),  profiles)
+#             clusters = unique(clustering_result.profiles.rep_period)
+#             # Construct the artificial worst case for each cluster
+#             for cluster in clusters
+                
+#                 # get period indices assigned to this cluster from the weight matrix
+#                 period_indices, _ = findnz(clustering_result.weight_matrix[:, cluster])
+#                 # filter group_profiles to only periods in this cluster
+#                 cluster_profiles = filter(row -> row[layout.period] in period_indices, group_profiles)
+#                 #Construct the worst case RP
+
+#                 worst_case_values = Dict{String, Vector{Float64}}() # profile_name -> 24 values
+
+#                 for t in 1:period_duration
+#                     timestep_data = filter(row -> row[layout.timestep] == t, cluster_profiles)
+
+#                     # Max demand across cluster periods at this timestep
+#                     demand_rows = filter(row -> row.profile_name == "demand", timestep_data)
+#                     max_demand = maximum(demand_rows.value)
+#                     if !haskey(worst_case_values, "demand")
+#                         worst_case_values["demand"] = Float64[]
+#                     end
+#                     push!(worst_case_values["demand"], max_demand)
+
+#                     # For each technology find the availability by: min(availability/demand) * max_demand
+#                     for tech in techs
+#                         tech_rows = filter(row -> row.profile_name == tech, timestep_data)
+#                         isempty(tech_rows) && continue
+
+#                         min_ratio = Inf
+#                         for p in unique(tech_rows.period)
+#                             avail = only(filter(row -> row.period == p, tech_rows)).value
+#                             dem   = only(filter(row -> row.period == p && row.profile_name == "demand", timestep_data)).value
+#                             ratio = avail / (dem + ε)
+#                             if ratio < min_ratio
+#                                 min_ratio = ratio
+#                             end
+#                         end
+
+#                         min_availability = min_ratio * max_demand
+#                         if !haskey(worst_case_values, tech)
+#                             worst_case_values[tech] = Float64[]
+#                         end
+#                         push!(worst_case_values[tech], min_availability)
+#                     end
+#                 end
+#                 # Inject this period into clustering_result struct
+#                 # First we need to add the worst case rp to the PROFILES
+#                 # it gets id +1 from the old maximum which hopefully is already updated from the last iteration of the loop 
+#                 new_rp_index = maximum(clustering_result.profiles.rep_period) + 1
+#                 new_rows = DataFrame()
+#                 milestone_year = group_key[:milestone_year]
+#                 has_scenario = :scenario in keys(group_key)
+#                 for (profile_name, values) in worst_case_values
+#                     for (t, v) in enumerate(values)
+#                         if has_scenario
+#                             push!(new_rows, (rep_period=new_rp_index, timestep=t, milestone_year=milestone_year, scenario=group_key[:scenario], profile_name=profile_name, value=v))
+#                         else
+#                             push!(new_rows, (rep_period=new_rp_index, timestep=t, milestone_year=milestone_year, profile_name=profile_name, value=v))
+#                         end
+#                     end
+#                 end
+#                 append!(clustering_result.profiles, new_rows)
+
+#                 # Append a new column to the WEIGHT_MATRIX with all zeroes for our new global rp 
+#                 n_original_periods = size(clustering_result.weight_matrix, 1)
+#                 zero_col = spzeros(n_original_periods)
+#                 clustering_result.weight_matrix = hcat(clustering_result.weight_matrix, zero_col)
+#                 if weight_type == :dirac
+#                     # Full Dirac reassignment scoped to this cluster's periods only.
+#                     # For each period in the cluster, if it is closer to the local WC
+#                     # than to its current centroid, steal it.
+#                     wc_vec       = clustering_result.rp_matrix[:, end]
+#                     n_reassigned = 0
+#                     for i in period_indices
+#                         period_vec   = clustering_result.clustering_matrix[:, i]
+#                         current_col  = argmax(Vector(clustering_result.weight_matrix[i, 1:end-1])) # the last added local worst case is the last column 
+#                         centroid_vec = clustering_result.rp_matrix[:, current_col]
+#                         dist_to_centroid = distance(period_vec, centroid_vec)
+#                         dist_to_wc       = distance(period_vec, wc_vec)
+#                         if dist_to_wc < dist_to_centroid
+#                             clustering_result.weight_matrix[i, current_col] = 0.0
+#                             clustering_result.weight_matrix[i, end]         = 1.0
+#                             n_reassigned += 1
+#                         end
+#                     end
+#                     println("  [local WC cluster=$cluster] Dirac reassignment: $n_reassigned / $(length(period_indices)) periods moved to WC")
+#                 end
+
+
+#                 # Lastly we need to add a column into the RP_MATRIX
+#                 # build feature vector for worst case
+#                 wc_df = copy(new_rows)
+#                 rename!(wc_df, :rep_period => :period)
+#                 sort!(wc_df, [:profile_name, :timestep])
+#                 #transform it the format of feature vector 
+#                 wc_matrix, _ = df_to_matrix_and_keys(wc_df, clustering_result.auxiliary_data.key_columns; layout)           
+#                 clustering_result.rp_matrix = hcat(clustering_result.rp_matrix, wc_matrix)
+#             end
+
+#             # println("Before fitting:")
+#             # for i in 1:size(clustering_result.weight_matrix, 2)
+#             #     println("Representative period $i has weight = $(sum(clustering_result.weight_matrix[:, i]))")
+#             # end
+#         end
+#     end
+# end
+
+
+
+# function inject_worst_case_fixed_2!(profiles, results_per_group, worst_case, period_duration, distance, percentage; layout=ProfilesTableLayout())
+#     if worst_case != :global_fixed
+#         return
+#     end
+
+#     # avoid division by zero
+#     ε = 1e-6
+
+#     techs = ["wind_onshore", "wind_offshore", "solar", "hydro_inflow"]
+
+#     if worst_case == :global_fixed
+#         println("global_fixed")
+#         for (group_key, clustering_result) in results_per_group # run for each scenario
+             
+#             # println("Before fitting:")
+#             # for i in 1:size(clustering_result.weight_matrix, 2)
+#             #     print("Representative period $i has weight = ")
+#             #     println(sum(clustering_result.weight_matrix[:, i]))
+#             # end 
+#             # filter profiles to this group
+#             group_profiles = filter(
+#                 row -> all(row[col] == group_key[col] for col in keys(group_key)),
+#                 profiles
+#             )
+
+#             # Construct the artificial worst case 
+#             worst_case_values = Dict{String, Vector{Float64}}()  # profile_name -> 24 values
+#             #println(unique(group_profiles.profile_name))
+
+#             for t in 1:period_duration
+#                 timestep_data = filter(row -> row[layout.timestep] == t, group_profiles)
+
+#                 # Max demand across all periods at this timestep
+#                 demand_rows = filter(row -> row.profile_name == "demand", timestep_data)
+#                 max_demand = maximum(demand_rows.value)
+
+#                 if !haskey(worst_case_values, "demand")
+#                     worst_case_values["demand"] = Float64[]
+#                 end
+#                 push!(worst_case_values["demand"], max_demand)
+
+#                 # For each technology find the availability by: min(availability/demand) * max_demand
+#                 for tech in techs
+#                     tech_rows = filter(row -> row.profile_name == tech, timestep_data)
+#                     isempty(tech_rows) && continue
+
+#                     min_ratio = Inf
+#                     for period in unique(tech_rows.period)
+#                         avail = only(filter(row -> row.period == period, tech_rows)).value
+#                         dem   = only(filter(row -> row.period == period && row.profile_name == "demand", timestep_data)).value
+#                         ratio = avail / (dem + ε)
+#                         if ratio < min_ratio
+#                             min_ratio = ratio
+#                         end
+#                     end
+
+#                     min_availability = min_ratio * max_demand
+#                     if !haskey(worst_case_values, tech)
+#                         worst_case_values[tech] = Float64[]
+#                     end
+#                     push!(worst_case_values[tech], min_availability)
+#                 end
+#             end
+#             # Inject this period into clustering_result struct
+#             # First we need to add the worst case rp to the PROFILES 
+#             new_rp_index = maximum(clustering_result.profiles.rep_period) + 1
+#             new_rows = DataFrame()
+#             milestone_year = group_key[:milestone_year]
+#             has_scenario = :scenario in keys(group_key)
+#             for (profile_name, values) in worst_case_values
+#                 for (t, v) in enumerate(values)
+#                     if has_scenario
+#                         push!(new_rows, (rep_period=new_rp_index, timestep=t, milestone_year=milestone_year, scenario=group_key[:scenario], profile_name=profile_name, value=v))
+#                     else
+#                         push!(new_rows, (rep_period=new_rp_index, timestep=t, milestone_year=milestone_year, profile_name=profile_name, value=v))
+#                     end
+#                 end
+#             end
+
+#             append!(clustering_result.profiles, new_rows)
+            
+#             # Append a new column to the WEIGHT_MATRIX for the new global rp
+#             # We want to assing to it 10%
+#             n_original_periods = size(clustering_result.weight_matrix, 1)
+#             total_weight       = sum(clustering_result.weight_matrix)
+#             wc_weight          = percentage * total_weight
+#             scale_factor       = (total_weight - wc_weight) / total_weight
+
+#             clustering_result.weight_matrix .*= scale_factor
+
+#             wc_col = spzeros(n_original_periods)
+#             wc_col[end] = wc_weight
+#             clustering_result.weight_matrix = hcat(clustering_result.weight_matrix, wc_col)
+        
+#             #Lastly we need to add a column into the RP_MATRIX
+#             # build feature vector for worst case
+#             wc_df = copy(new_rows)
+#             rename!(wc_df, :rep_period => :period)
+#             sort!(wc_df, [:profile_name, :timestep])
+#             #transform it the format of feature vector 
+#             wc_matrix, _ = df_to_matrix_and_keys(wc_df, clustering_result.auxiliary_data.key_columns; layout)
+#             clustering_result.rp_matrix = hcat(clustering_result.rp_matrix, wc_matrix)
+#         end
+#     end
+# end
