@@ -214,27 +214,6 @@ function cluster_with_worst_case!(
     end
 
 
-    #If worst case strategy is WORSTCASE_before we need to add the global/local worst case RP befor clustering
-    #so change the initial representatives. Initially it is a 0x0 (empty) Dataframe
-   
-    # wc_initial_reps = if worst_case == :global_before
-    #                        construction == 1 ?
-    #                            build_global_wc_dataframe(profiles, grouped_profiles_data, period_duration, layout) :
-    #                            build_global_wc_dataframe_2(profiles, grouped_profiles_data, period_duration, layout)
-    #                   elseif worst_case == :local_before
-    #                        pre_results = Dict(
-    #                            group_key => find_representative_periods(
-    #                                group, num_rps ÷ 2;
-    #                                method = :k_medoids, distance, layout, clustering_kwargs...
-    #                            ) for (group_key, group) in pairs(grouped_profiles_data)
-    #                        )
-    #                        construction == 1 ?
-    #                            build_local_before_wc_dataframe(profiles, grouped_profiles_data, pre_results, period_duration, layout) :
-    #                            build_local_before_wc_dataframe_2(profiles, grouped_profiles_data, pre_results, period_duration, layout)
-    #                   else
-    #                        initial_representatives
-    #                   end
-
     results_per_group = Dict(
         group_key => find_representative_periods(
             group,
@@ -252,12 +231,6 @@ function cluster_with_worst_case!(
         ) for (group_key, group) in pairs(grouped_profiles_data)
     )
 
-    # #Add the artificial worst case rps
-    # if construction == 1 #old construction logic now i use 2
-    #     inject_worst_case!(profiles, results_per_group, worst_case, period_duration, distance; layout)
-    # else
-    #     inject_worst_case_2!(profiles, results_per_group, worst_case, weight_type, period_duration, distance; layout)
-    # end
     inject_worst_case_2!(profiles, results_per_group, worst_case, weight_type, period_duration, distance; layout)
 
     for clustering_result in values(results_per_group)
@@ -270,7 +243,6 @@ function cluster_with_worst_case!(
         # For all weights, the fitter might assing not enought weight,
         # so if WC ends up with weight 0 the rep_periods_mapping table will have no
         # entry for it and TEM throws a Missing error. Ensure it has weight > 0.0.
-        # TODO maybe we dont need this??
         if worst_case != :none && worst_case !=:global_fixed
             n_rps = size(clustering_result.weight_matrix, 2)
             n_wc  = worst_case == :local ? (n_rps ÷ 2) : 1
