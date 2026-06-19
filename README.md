@@ -11,6 +11,15 @@
 [![All Contributors](https://img.shields.io/github/all-contributors/TulipaEnergy/TulipaClustering.jl?labelColor=5e1ec7&color=c0ffee&style=flat-square)](#contributors)
 [![BestieTemplate](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/JuliaBesties/BestieTemplate.jl/main/docs/src/assets/badge.json)](https://github.com/JuliaBesties/BestieTemplate.jl)
 
+This repository is a fork of the [Tulipa Clustering repository](https://github.com/TulipaEnergy/TulipaClustering.jl) created as part of the 2025/2026 edition of the [CSE3000 Research Project](https://github.com/TU-Delft-CSE/Research-Project) course at TU Delft. 
+
+The repo contains changes from the original on two files: 
+- `convenience.jl`
+- `find-representative-periods.jl`
+  
+The forked code is used in the [main repository](https://github.com/GeorgeKall/Research_Project) to run the experiments described in the thesis.
+
+
 ## How to Cite
 
 If you use TulipaClustering.jl in your work, please cite using the reference given in [CITATION.cff](https://github.com/TulipaEnergy/TulipaClustering.jl/blob/main/CITATION.cff).
